@@ -1,6 +1,6 @@
 import streamlit as st
 import json
-import pandas as pd
+from datetime import datetime, timedelta
 
 # ==========================================
 # CẤU HÌNH GIAO DIỆN TRANG WEB
@@ -8,7 +8,8 @@ import pandas as pd
 st.set_page_config(page_title="Phân tích Mùa Vụ", page_icon="🌱", layout="wide")
 
 st.title("🌱 Bảng Theo Dõi Hệ Thống Tưới Nhỏ Giọt")
-st.markdown("---") # Kẻ đường ngang
+st.markdown("*(Phiên bản phân tích bằng Logic cốt lõi)*")
+st.markdown("---")
 
 # ==========================================
 # KHU VỰC MENU BÊN TRÁI (SIDEBAR)
@@ -16,104 +17,133 @@ st.markdown("---") # Kẻ đường ngang
 st.sidebar.header("⚙️ Cài Đặt Thông Số")
 input_file = st.sidebar.text_input("Tên file dữ liệu:", "Lich nho giotj.json")
 
-# Tạo một cái menu xổ xuống để chọn STT thay vì phải sửa code
+# Menu chọn STT
 STT_CAN_TIM = st.sidebar.selectbox("Chọn STT cần phân tích:", ["1", "2", "3", "4"], index=3) 
+
+# [NÂNG CẤP XỊN]: Thanh kéo chọn số ngày chuyển vụ
+SO_NGAY_CHUYEN_VU = st.sidebar.slider(
+    "⏳ Số ngày nghỉ để cắt mùa vụ mới:", 
+    min_value=1.0, 
+    max_value=10.0, 
+    value=3.0, 
+    step=0.5,
+    help="Nếu máy nghỉ tưới lâu hơn số ngày này, hệ thống sẽ tự động tính là chuyển sang vụ mới."
+)
 
 # ==========================================
 # NÚT BẤM CHẠY CHƯƠNG TRÌNH
 # ==========================================
 if st.sidebar.button("🚀 Chạy Phân Tích", type="primary"):
     try:
-        # --- ĐOẠN CODE ĐỌC FILE VÀ LỌC DỮ LIỆU GIỮ NGUYÊN ---
+        # 1. ĐỌC FILE VÀ NHẶT DỮ LIỆU
         with open(input_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        needed_keys = {'STT', 'Thời gian', 'TBEC', 'TBPH'}
-        filtered_data = [
-            {k: item.get(k) for k in needed_keys}
-            for item in data if str(item.get('STT')) == STT_CAN_TIM
-        ]
-        del data 
+        du_lieu_da_loc = [] 
+        
+        for item in data:
+            if str(item.get('STT')) == STT_CAN_TIM:
+                thoi_gian_str = item.get('Thời gian')
+                if not thoi_gian_str:
+                    continue
+                    
+                thoi_gian_obj = datetime.strptime(thoi_gian_str, '%Y-%m-%d %H-%M-%S')
+                ec_val = float(item.get('TBEC', 0)) / 100.0
+                ph_val = float(item.get('TBPH', 0)) / 100.0
+                
+                du_lieu_da_loc.append({
+                    'Thời gian': thoi_gian_obj,
+                    'EC': ec_val,
+                    'pH': ph_val
+                })
 
-        if not filtered_data:
-            # Thay vì in print, dùng st.error để hiện hộp cảnh báo màu đỏ
+        if not du_lieu_da_loc:
             st.error(f"❌ Không có dữ liệu nào khớp với STT = {STT_CAN_TIM}.")
         else:
-            df = pd.DataFrame(filtered_data)
-            df.drop(columns=['STT'], inplace=True, errors='ignore')
+            # 2. SẮP XẾP TỪ CŨ ĐẾN MỚI
+            du_lieu_da_loc.sort(key=lambda x: x['Thời gian'])
 
-            df['Thời gian'] = pd.to_datetime(df['Thời gian'], format='%Y-%m-%d %H-%M-%S', errors='coerce')
-            df.dropna(subset=['Thời gian'], inplace=True)
-            df.sort_values(by='Thời gian', inplace=True, ignore_index=True)
-
-            if not df.empty:
-                gaps = df['Thời gian'].diff() > pd.Timedelta(days=3)
-                df['Mùa_Vụ'] = gaps.cumsum() + 1
+            # 3. TÌM MÙA VỤ BẰNG LOGIC KHOẢNG NGHỈ
+            danh_sach_mua_vu = [] 
+            mua_hien_tai = [du_lieu_da_loc[0]] 
+            
+            for i in range(1, len(du_lieu_da_loc)):
+                ngay_truoc = du_lieu_da_loc[i-1]['Thời gian']
+                ngay_nay = du_lieu_da_loc[i]['Thời gian']
                 
-                df['EC'] = pd.to_numeric(df['TBEC'], errors='coerce') / 100.0
-                df['pH'] = pd.to_numeric(df['TBPH'], errors='coerce') / 100.0
-                df.drop(columns=['TBEC', 'TBPH'], inplace=True, errors='ignore')
-                df.dropna(subset=['EC', 'pH'], inplace=True)
-
-                tong_so_mua_phat_hien = df['Mùa_Vụ'].max()
+                # So sánh với cái thanh kéo bên Sidebar
+                if (ngay_nay - ngay_truoc) > timedelta(days=SO_NGAY_CHUYEN_VU):
+                    danh_sach_mua_vu.append(mua_hien_tai) 
+                    mua_hien_tai = [] 
                 
-                # Hiện thông báo thành công màu xanh lá
-                st.success(f"🔍 Hệ thống đã quét {tong_so_mua_phat_hien} đợt máy chạy. Đã tự động lọc nhiễu các đợt test!")
+                mua_hien_tai.append(du_lieu_da_loc[i])
+            
+            if mua_hien_tai:
+                danh_sach_mua_vu.append(mua_hien_tai)
 
-                so_thu_tu_mua_that = 1
+            st.success(f"🔍 Hệ thống quét được {len(danh_sach_mua_vu)} đợt chạy máy. Đang tự động dọn dẹp rác/test...")
 
-                # --- VÒNG LẶP XỬ LÝ VÀ IN BÁO CÁO TRÊN WEB ---
-                for id_mua in range(1, tong_so_mua_phat_hien + 1):
-                    df_mua = df[df['Mùa_Vụ'] == id_mua].copy()
+            so_thu_tu_mua_that = 1
+            
+            # 4. XỬ LÝ BÁO CÁO TỪNG MÙA ĐỂ HIỂN THỊ LÊN WEB
+            for mua_vu in danh_sach_mua_vu:
+                ngay_bat_dau = mua_vu[0]['Thời gian']
+                ngay_ket_thuc = mua_vu[-1]['Thời gian']
+                tong_so_ngay = (ngay_ket_thuc - ngay_bat_dau).days
+                
+                # Bỏ qua test máy dưới 1 ngày
+                if tong_so_ngay < 1:
+                    continue
                     
-                    if df_mua.empty: continue
-                        
-                    start_season = df_mua['Thời gian'].iloc[0]
-                    end_season = df_mua['Thời gian'].iloc[-1]
-                    season_days = (end_season - start_season).days
+                # Tạo thẻ có thể đóng/mở
+                with st.expander(f"🌾 MÙA VỤ SỐ {so_thu_tu_mua_that} (Bấm để xem chi tiết)", expanded=True):
                     
-                    # BỘ LỌC NHIỄU
-                    if season_days < 1: continue 
+                    # 3 Ô hiển thị nhanh
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Bắt đầu", ngay_bat_dau.strftime('%d/%m/%Y'))
+                    col2.metric("Kết thúc", ngay_ket_thuc.strftime('%d/%m/%Y'))
+                    col3.metric("Tổng thời gian", f"{tong_so_ngay} ngày")
+                    
+                    # 5. TÍNH TOÁN THEO TUẦN
+                    thong_ke_tuan = {} 
+                    
+                    for lan_tuoi in mua_vu:
+                        so_tuan = ((lan_tuoi['Thời gian'] - ngay_bat_dau).days // 7) + 1
+                        if so_tuan not in thong_ke_tuan:
+                            thong_ke_tuan[so_tuan] = {'Tong_EC': 0, 'Tong_pH': 0, 'So_Lan': 0}
+                            
+                        thong_ke_tuan[so_tuan]['Tong_EC'] += lan_tuoi['EC']
+                        thong_ke_tuan[so_tuan]['Tong_pH'] += lan_tuoi['pH']
+                        thong_ke_tuan[so_tuan]['So_Lan'] += 1
 
-                    # Tạo một cái thẻ (Expander) có thể đóng/mở cho từng mùa
-                    with st.expander(f"🌾 MÙA VỤ SỐ {so_thu_tu_mua_that} (Bấm để xem chi tiết)", expanded=True):
+                    bang_in_ra_man_hinh = []
+                    
+                    for so_tuan in sorted(thong_ke_tuan.keys()):
+                        du_lieu = thong_ke_tuan[so_tuan]
+                        so_lan = du_lieu['So_Lan']
                         
-                        # Chia làm 3 cột để hiển thị thông số tổng quan cho đẹp
-                        col1, col2, col3 = st.columns(3)
-                        col1.metric("Bắt đầu", start_season.strftime('%d/%m/%Y'))
-                        col2.metric("Kết thúc", end_season.strftime('%d/%m/%Y'))
-                        col3.metric("Tổng thời gian", f"{season_days} ngày")
+                        ec_tb = round(du_lieu['Tong_EC'] / so_lan, 2)
+                        ph_tb = round(du_lieu['Tong_pH'] / so_lan, 2)
                         
-                        df_mua['Tuần'] = ((df_mua['Thời gian'] - start_season).dt.days // 7) + 1
+                        tuan_bat = ngay_bat_dau + timedelta(days=(so_tuan - 1) * 7)
+                        nhan_hien_thi = f"Tuần {so_tuan} ({tuan_bat.strftime('%d/%m')})"
                         
-                        weekly_stats = df_mua.groupby('Tuần').agg(
-                            EC_TB=('EC', 'mean'),
-                            pH_TB=('pH', 'mean'),
-                            So_lan_tuoi=('EC', 'count')
-                        ).round(2)
-                        
-                        def format_week_label(tuan_idx, ngay_bat_dau_mua):
-                            ngay_dau_tuan = ngay_bat_dau_mua + pd.Timedelta(days=(tuan_idx - 1) * 7)
-                            ngay_cuoi_tuan = ngay_dau_tuan + pd.Timedelta(days=6)
-                            return f"Tuần {tuan_idx} ({ngay_dau_tuan.strftime('%d/%m')})"
-                        
-                        weekly_stats.index = [format_week_label(idx, start_season) for idx in weekly_stats.index]
-                        weekly_stats.index.name = 'Thời Gian'
-                        weekly_stats.rename(columns={
-                            'EC_TB': 'EC Trung Bình', 
-                            'pH_TB': 'pH Trung Bình', 
-                            'So_lan_tuoi': 'Số Lần Tưới'
-                        }, inplace=True)
-                        
-                        # Hiển thị bảng dữ liệu (Streamlit tự vẽ)
-                        st.markdown("**📋 Bảng dữ liệu chi tiết:**")
-                        st.dataframe(weekly_stats, use_container_width=True)
-                        
-                        # VẼ BIỂU ĐỒ ĐƯỜNG TỰ ĐỘNG CHO EC VÀ pH
-                        st.markdown("**📈 Biểu đồ xu hướng EC và pH:**")
-                        st.line_chart(weekly_stats[['EC Trung Bình', 'pH Trung Bình']])
+                        bang_in_ra_man_hinh.append({
+                            "Tuần": nhan_hien_thi,
+                            "EC Trung Bình": ec_tb,
+                            "pH Trung Bình": ph_tb,
+                            "Số Lần Tưới": so_lan
+                        })
 
-                    so_thu_tu_mua_that += 1
+                    # Vẽ Bảng bằng Streamlit (Không cần tabulate nữa)
+                    st.markdown("**📋 Bảng dữ liệu chi tiết:**")
+                    st.dataframe(bang_in_ra_man_hinh, use_container_width=True)
+                    
+                    # Vẽ biểu đồ trực tiếp từ danh sách
+                    st.markdown("**📈 Biểu đồ xu hướng EC và pH:**")
+                    st.line_chart(bang_in_ra_man_hinh, x="Tuần", y=["EC Trung Bình", "pH Trung Bình"])
+
+                so_thu_tu_mua_that += 1
 
     except FileNotFoundError:
         st.error(f"❌ Không tìm thấy file '{input_file}'. Hãy đảm bảo file để cùng thư mục với code.")
